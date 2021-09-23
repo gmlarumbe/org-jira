@@ -1590,6 +1590,7 @@ purpose of wiping an old subtree."
     (org-jira-update-issue-details issue-id filename :assignee nil)))
 
 ;;;###autoload
+;; INFO: Changes to allow `org-jira-update-issue-details' work with emails as users (instead of Atlassian accountIds)
 (defun org-jira-set-issue-reporter ()
   "Update an issue's reporter interactively."
   (interactive)
@@ -1598,19 +1599,18 @@ purpose of wiping an old subtree."
     (if issue-id
         (let* ((project (replace-regexp-in-string "-[0-9]+" "" issue-id))
                (jira-users (org-jira-get-reporter-candidates project)) ;; TODO, probably a better option than org-jira-get-assignable-users here
-               (user (completing-read
-                      "Reporter: "
-                      (append (mapcar 'car jira-users)
-                              (mapcar 'cdr jira-users))))
-               (reporter (or
-                          (cdr (assoc user jira-users))
-                          (cdr (rassoc user jira-users)))))
+               (user     (completing-read "Reporter: " jira-users))
+               (reporter (cdr (assoc user jira-users))))
           (when (null reporter)
             (error "No reporter found, this should probably never happen."))
-          (org-jira-update-issue-details issue-id filename :reporter (jiralib-get-user-account-id project reporter)))
+          ;; INFO: Add assignee as it is needed by `org-jira-update-issue-details'
+          (org-jira-update-issue-details issue-id filename
+                                         :assignee (cdr (assoc (org-jira-get-issue-val-from-org 'assignee) jira-users))
+                                         :reporter reporter))
       (error "Not on an issue"))))
 
 ;;;###autoload
+;; INFO: Changes to allow `org-jira-update-issue-details' work with emails as users (instead of Atlassian accountIds)
 (defun org-jira-assign-issue ()
   "Update an issue with interactive re-assignment."
   (interactive)
@@ -1621,14 +1621,14 @@ purpose of wiping an old subtree."
                (jira-users (org-jira-get-assignable-users project))
                (user (completing-read
                       "Assignee: "
-                      (append (mapcar 'car jira-users)
-                              (mapcar 'cdr jira-users))))
-               (assignee (or
-                          (cdr (assoc user jira-users))
-                          (cdr (rassoc user jira-users)))))
+                      jira-users))
+               (assignee (cdr (assoc user jira-users))))
           (when (null assignee)
             (error "No assignee found, use org-jira-unassign-issue to make the issue unassigned"))
-          (org-jira-update-issue-details issue-id filename :assignee (jiralib-get-user-account-id project assignee)))
+          ;; INFO: Add reporter as it is needed by `org-jira-update-issue-details'
+          (org-jira-update-issue-details issue-id filename
+                                         :assignee assignee
+                                         :reporter (cdr (assoc (org-jira-get-issue-val-from-org 'reporter) jira-users))))
       (error "Not on an issue"))))
 
 ;;;###autoload
@@ -1817,6 +1817,10 @@ that should be bound to an issue."
   (ensure-on-issue
     (cond ((eq key 'description)
            (org-goto-first-child)
+           ;; INFO: Tickets description have an additional header for non-Atlassian JIRA setups
+           ;; *** PROJECT-Tickets: description:
+           (forward-thing 'whitespace)
+           (forward-thing 'symbol)
            (forward-thing 'whitespace)
            (if (looking-at "description: ")
                (org-trim (org-get-entry))
@@ -2122,6 +2126,10 @@ otherwise it should return:
   "Given string S, remove any priority tags in the brackets."
   (->> s (replace-regexp-in-string "\\[#.*?\\]" "") org-trim))
 
+;; INFO: Must be overrided due to priority issue with `jiralib-get-priorities'
+;; REST api returns 403 forbidden code for priorities.
+;; Maybe I could override the `jiralib-get-priorities' to complete reading a list of 5 possible values:
+;; None, Lowest, Low, Medium, High, Highest
 (defun org-jira-update-issue-details (issue-id filename &rest rest)
   "Update the details of issue ISSUE-ID in FILENAME.  REST will contain optional input."
   (ensure-on-issue-id-with-filename issue-id filename
@@ -2131,10 +2139,11 @@ otherwise it should return:
            (org-issue-priority (org-jira-get-issue-val-from-org 'priority))
            (org-issue-type (org-jira-get-issue-val-from-org 'type))
            (org-issue-type-id (org-jira-get-issue-val-from-org 'type-id))
-           (org-issue-assignee (cl-getf rest :assignee (org-jira-get-issue-val-from-org 'assignee)))
-           (org-issue-reporter (cl-getf rest :reporter (org-jira-get-issue-val-from-org 'reporter)))
            (project (replace-regexp-in-string "-[0-9]+" "" issue-id))
-           (project-components (jiralib-get-components project)))
+           (project-components (jiralib-get-components project))
+           (jira-users (org-jira-get-assignable-users project))
+           (org-issue-assignee (cl-getf rest :assignee (cdr (assoc (org-jira-get-issue-val-from-org 'assignee) jira-users))))
+           (org-issue-reporter (cl-getf rest :reporter (cdr (assoc (org-jira-get-issue-val-from-org 'reporter) jira-users)))))
 
       ;; Lets fire off a worklog update async with the main issue
       ;; update, why not?  This is better to fire first, because it
@@ -2152,11 +2161,11 @@ otherwise it should return:
                     (or (org-jira-build-components-list
                          project-components
                          org-issue-components) []))
-                   (cons 'priority (org-jira-get-id-name-alist org-issue-priority
-                                                       (jiralib-get-priorities)))
+                   ;; INFO: Remove priority from updated fields since REST api returns 403 forbidden code
                    (cons 'description org-issue-description)
-                   (cons 'assignee (list (cons 'id (jiralib-get-user-account-id project org-issue-assignee))))
-                   (cons 'reporter (list (cons 'id (jiralib-get-user-account-id project org-issue-reporter))))
+                   ;; INFO: Retrieve assignee and reporter by user/email and not by accountId
+                   (cons 'assignee (list (cons 'name org-issue-assignee)))
+                   (cons 'reporter (list (cons 'name org-issue-reporter)))
                    (cons 'summary (org-jira-strip-priority-tags (org-jira-get-issue-val-from-org 'summary)))
                    (cons 'issuetype `((id . ,org-issue-type-id)
       (name . ,org-issue-type))))))
