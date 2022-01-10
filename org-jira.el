@@ -1067,7 +1067,7 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
   (let ((elem (org-element-at-point)))
     (and (eq 'headline (car elem))
          (equal (format "%s-Tickets" proj-key)
-                (plist-get (cadr elem) :title))
+                (car (plist-get (cadr elem) :title)))
          (= 1 (plist-get (cadr elem) :level)))))
 
 (defun org-jira--maybe-render-top-heading (proj-key)
